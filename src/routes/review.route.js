@@ -90,6 +90,8 @@ router.post("/prompt/:bookingId/dismiss", reviewPromptLimiter, auth, reviewPromp
 
 // Reviews are visible to logged-in users only.
 router.get("/package/:packageId", auth, reviewController.getByPackage);
+// Single review, used to deep-link to a review that is not on the first page.
+router.get("/:id", auth, reviewController.getById);
 // Only users with a paid booking for the package may review it (checked in the controller).
 router.post(
   "/package/:packageId",

@@ -5,6 +5,7 @@ const Agent = require("../models/agent.model");
 const Razorpay = require("razorpay");
 const crypto = require("crypto");
 const { sendMail } = require("../utils/mailer");
+const { notifyAgentOfBooking } = require("../services/bookingNotification.service");
 const { isPaginationRequested, parsePagination } = require("../utils/pagination");
 const { encryptId } = require("../utils/crypto");
 const {
@@ -217,6 +218,9 @@ exports.verifyPayment = async (req, res) => {
 
     const booking = await Booking.findById(booking_id);
     const paidInFull = Number(booking.balance_amount) <= 0;
+
+    // Not awaited: the traveller's confirmation should not wait on the partner's mail server.
+    notifyAgentOfBooking(booking);
     const invoiceUrl = `https://mytraveltown.com/booking/${encodeURIComponent(encryptId(booking.id))}/invoice`;
 
     try {

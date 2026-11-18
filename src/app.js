@@ -35,6 +35,7 @@ app.use("/api/wishlist", require("./routes/wishlist.route"));
 app.use("/api/reviews", require("./routes/review.route"));
 app.use("/api/digilocker", require("./routes/digilocker.route"));
 app.use("/api/sitemap", require("./routes/sitemap.route"));
+app.use("/api/seo", require("./routes/seo.route"));
 app.use("/api/ai", require("./routes/ai.route"));
 
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));

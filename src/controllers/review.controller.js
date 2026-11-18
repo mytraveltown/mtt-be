@@ -94,6 +94,26 @@ exports.getByPackage = async (req, res) => {
   }
 };
 
+// GET /api/reviews/:id
+exports.getById = async (req, res) => {
+  try {
+    const reviewId = parseId(req.params.id);
+    if (!reviewId) {
+      return res.status(400).json({ message: "Invalid review id" });
+    }
+
+    const review = await Review.findFullById(reviewId);
+    if (!review) {
+      return res.status(404).json({ message: "Review not found" });
+    }
+
+    res.status(200).json({ review });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error", err: err.message });
+  }
+};
+
 // POST /api/reviews/package/:packageId  (multipart: rating, comment, media[]; requires a paid booking)
 exports.create = async (req, res) => {
   const files = req.files || [];
