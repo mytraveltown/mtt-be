@@ -1,0 +1,24 @@
+name: Deploy Backend to VPS (Apache)
+
+on:
+  push:
+    branches:
+      - server
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ✅ REMOTE PERMISSIONS
+      - name: stsrt deploy
+        uses: appleboy/ssh-action@v0.1.8
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_KEY }}
+          script: |
+            cd /var/www/backend
+            git pull origin server
+            npm install
+            pm2 restart all
