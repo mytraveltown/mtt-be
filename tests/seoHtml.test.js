@@ -11,7 +11,7 @@ const TEMPLATE = `<!doctype html>
   <title>MyTravelTown: India&#39;s First AI TravelTech Marketplace</title>
   <meta name="description" content="Default description" data-seo-fallback />
   <meta property="og:title" content="Default title" data-seo-fallback />
-  <meta property="og:image" content="${SITE_URL}/mytraveltown-logo.png" data-seo-fallback />
+  <meta property="og:image" content="${SITE_URL}/og-image.jpg" data-seo-fallback />
   <meta name="google-site-verification" content="keep-me" />
 </head>
 <body><div id="root"></div></body>
@@ -34,7 +34,7 @@ test("buildPackageSeo uses the package name as title and its description as desc
   assert.equal(seo.title, "Goa Beach Escape | MyTravelTown");
   assert.equal(seo.description, "Sun, sand and seafood on the Goa coast.");
   assert.equal(seo.url, `${SITE_URL}/package/goa-beach-escape`);
-  assert.equal(seo.image, `${SITE_URL}/mytraveltown-logo.png`);
+  assert.equal(seo.image, `${SITE_URL}/og-image.jpg`);
 });
 
 test("buildPackageSeo trims long descriptions to 160 characters", () => {

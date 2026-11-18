@@ -1,6 +1,8 @@
 const SITE_NAME = "MyTravelTown";
 const META_DESCRIPTION_LENGTH = 160;
-const DEFAULT_OG_IMAGE_PATH = "/mytraveltown-logo.png";
+const DEFAULT_OG_IMAGE_PATH = "/og-image.jpg";
+/** Only the default share card has a known size; package photos vary. */
+const DEFAULT_OG_IMAGE_META = { type: "image/jpeg", width: 1200, height: 630 };
 
 // Must match the marker in the frontend index.html; the React SEO component removes
 // these tags on load, so injected tags never duplicate the ones Helmet renders.
@@ -77,6 +79,14 @@ const renderSeoTags = ({ title, description, url, image, type }) => {
     `<meta property="og:description" content="${d}" data-seo-fallback />`,
     `<meta property="og:url" content="${u}" data-seo-fallback />`,
     `<meta property="og:image" content="${i}" data-seo-fallback />`,
+    `<meta property="og:image:secure_url" content="${i}" data-seo-fallback />`,
+    ...(String(image).endsWith(DEFAULT_OG_IMAGE_PATH)
+      ? [
+          `<meta property="og:image:type" content="${DEFAULT_OG_IMAGE_META.type}" data-seo-fallback />`,
+          `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_META.width}" data-seo-fallback />`,
+          `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_META.height}" data-seo-fallback />`,
+        ]
+      : []),
     `<meta property="og:image:alt" content="${SITE_NAME}" data-seo-fallback />`,
     `<meta name="twitter:card" content="summary_large_image" data-seo-fallback />`,
     `<meta name="twitter:title" content="${t}" data-seo-fallback />`,
