@@ -1,23 +1,9 @@
-const fs = require("fs");
-const path = require("path");
 const router = require("express").Router();
-const multer = require("multer");
 const rateLimit = require("express-rate-limit");
 const reviewController = require("../controllers/review.controller");
 const reviewPromptController = require("../controllers/reviewPrompt.controller");
 const auth = require("../middlewares/auth.middleware");
-
-const MAX_MEDIA_FILES = 5;
-const MAX_FILE_SIZE = 25 * 1024 * 1024;
-const ALLOWED_MEDIA = {
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".png": "image/png",
-  ".webp": "image/webp",
-  ".mp4": "video/mp4",
-  ".mov": "video/quicktime",
-  ".webm": "video/webm",
-};
+const formFields = require("../middlewares/formFields.middleware");
 
 // Cap submissions per IP on top of the booking/ownership checks in the controller.
 const createReviewLimiter = rateLimit({
@@ -45,44 +31,6 @@ const reviewPromptLimiter = rateLimit({
   message: { success: false, message: "Too many requests. Please try again later.", data: null },
 });
 
-const uploadDir = path.join(__dirname, "../../uploads/reviews");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, `review_${req.user.id}_${Date.now()}_${Math.round(Math.random() * 1e5)}${ext}`);
-  },
-});
-
-const upload = multer({
-  storage,
-  limits: { fileSize: MAX_FILE_SIZE, files: MAX_MEDIA_FILES },
-  fileFilter: (_req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    if (ALLOWED_MEDIA[ext] && ALLOWED_MEDIA[ext] === file.mimetype) return cb(null, true);
-    cb(new Error("Only JPG, PNG, WEBP images or MP4, MOV, WEBM videos are allowed"));
-  },
-});
-
-const handleMediaUpload = (req, res, next) => {
-  upload.array("media", MAX_MEDIA_FILES)(req, res, (err) => {
-    if (err) {
-      const message =
-        err.code === "LIMIT_FILE_SIZE"
-          ? "Each file must be 25 MB or smaller"
-          : err.code === "LIMIT_FILE_COUNT" || err.code === "LIMIT_UNEXPECTED_FILE"
-            ? `You can upload up to ${MAX_MEDIA_FILES} files`
-            : err.message;
-      return res.status(400).json({ message });
-    }
-    next();
-  });
-};
-
 // Post-trip "rate your trip" prompt for the logged-in traveller.
 router.get("/prompt", reviewPromptLimiter, auth, reviewPromptController.getPending);
 router.post("/prompt/:bookingId/seen", reviewPromptLimiter, auth, reviewPromptController.markSeen);
@@ -97,7 +45,7 @@ router.post(
   "/package/:packageId",
   createReviewLimiter,
   auth,
-  handleMediaUpload,
+  formFields,
   reviewController.create
 );
 router.delete("/:id", auth, reviewController.remove);

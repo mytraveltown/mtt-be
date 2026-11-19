@@ -1,5 +1,3 @@
-const fs = require("fs");
-const path = require("path");
 const Agent = require("../models/agent.model");
 const TravelPackage = require("../models/package.model");
 const { deletePackageFull } = require("../services/delete.service");
@@ -7,6 +5,8 @@ const { isPaginationRequested, parsePagination } = require("../utils/pagination"
 const { LOCATION_DESCRIPTION_MAX_WORDS, countWords } = require("../utils/wordLimit");
 const { INTERNATIONAL_MIN_PRICE } = require("../utils/pricing");
 const { prepareTextForSave } = require("../services/textRefiner.service");
+const { attachUploads, deleteStoredFile } = require("../services/media.service");
+const { parseUploadList } = require("../utils/mediaPath");
 
 /**
  * On publish, the location description is polished with AI just like the "Improve with AI" button,
@@ -51,24 +51,25 @@ const parseItinerary = (value) => {
   }));
 };
 
-const getMediaType = (file) => {
-  if (file.mimetype?.startsWith("video/")) return "video";
-  return "image";
+const GALLERY_FORMAT_ERROR = "gallery must be a list of uploaded file paths";
+
+/**
+ * Attaches the gallery paths sent with the form ("/media/..." from /api/uploads/presign)
+ * and returns media rows numbered from `startOrder`.
+ */
+const attachGallery = async (paths, userId, startOrder = 0) => {
+  const attached = await attachUploads(paths, { scope: "package-media", userId });
+  return attached.map((item, index) => ({
+    file_path: item.path,
+    media_type: item.kind === "video" ? "video" : "image",
+    sort_order: startOrder + index,
+  }));
 };
 
-const getGalleryFiles = (req) => {
-  if (!req.files) return [];
-  if (Array.isArray(req.files)) return req.files;
-  if (req.files.gallery) return req.files.gallery;
-  return [];
-};
-
-const deleteMediaFile = (filePath) => {
-  if (!filePath?.startsWith("/uploads/packages/")) return;
-  const fullPath = path.join(__dirname, "../..", filePath.replace(/^\//, ""));
-  if (fs.existsSync(fullPath)) {
-    fs.unlinkSync(fullPath);
-  }
+const sendError = (res, err) => {
+  if (err.statusCode) return res.status(err.statusCode).json({ message: err.message });
+  console.error(err);
+  return res.status(500).json({ message: "Server error", err: err.message });
 };
 
 const buildPackagePayload = (body, statusOverride = null) => {
@@ -376,6 +377,11 @@ exports.create = async (req, res) => {
       return res.status(400).json({ message: "At least one itinerary day is required" });
     }
 
+    const galleryPaths = parseUploadList(req.body.gallery);
+    if (!galleryPaths) return res.status(400).json({ message: GALLERY_FORMAT_ERROR });
+    // Attached before the package exists so a bad file fails the request without a half-saved package.
+    const mediaItems = await attachGallery(galleryPaths, req.user.id);
+
     const payload = await polishDescriptionOnPublish(built.payload);
 
     const packageId = await TravelPackage.create({
@@ -386,21 +392,14 @@ exports.create = async (req, res) => {
 
     await TravelPackage.replaceItinerary(packageId, itinerary);
 
-    const galleryFiles = getGalleryFiles(req);
-    if (galleryFiles.length) {
-      const mediaItems = galleryFiles.map((file, index) => ({
-        file_path: `/uploads/packages/${file.filename}`,
-        media_type: getMediaType(file),
-        sort_order: index,
-      }));
+    if (mediaItems.length) {
       await TravelPackage.addMedia(packageId, mediaItems);
     }
 
     const created = await TravelPackage.findFullById(packageId);
     res.status(201).json(created);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error", err: err.message });
+    sendError(res, err);
   }
 };
 
@@ -414,6 +413,12 @@ exports.update = async (req, res) => {
 
     const built = buildPackagePayload(req.body);
     if (built.error) return res.status(400).json({ message: built.error });
+
+    const galleryPaths = parseUploadList(req.body.gallery);
+    if (!galleryPaths) return res.status(400).json({ message: GALLERY_FORMAT_ERROR });
+    // New files go after the current gallery; attached first so a bad file changes nothing.
+    const currentMedia = galleryPaths.length ? await TravelPackage.getMedia(req.params.id) : [];
+    const newMediaItems = await attachGallery(galleryPaths, req.user.id, currentMedia.length);
 
     const { pkg: existing } = ownership;
     const payload = await polishDescriptionOnPublish(
@@ -436,23 +441,14 @@ exports.update = async (req, res) => {
       await TravelPackage.replaceItinerary(req.params.id, itinerary);
     }
 
-    const galleryFiles = getGalleryFiles(req);
-    if (galleryFiles.length) {
-      const existingMedia = await TravelPackage.getMedia(req.params.id);
-      const startOrder = existingMedia.length;
-      const mediaItems = galleryFiles.map((file, index) => ({
-        file_path: `/uploads/packages/${file.filename}`,
-        media_type: getMediaType(file),
-        sort_order: startOrder + index,
-      }));
-      await TravelPackage.addMedia(req.params.id, mediaItems);
+    if (newMediaItems.length) {
+      await TravelPackage.addMedia(req.params.id, newMediaItems);
     }
 
     const updated = await TravelPackage.findFullById(req.params.id);
     res.status(200).json(updated);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error", err: err.message });
+    sendError(res, err);
   }
 };
 
@@ -486,8 +482,8 @@ exports.deleteMedia = async (req, res) => {
       return res.status(404).json({ message: "Media not found" });
     }
 
-    deleteMediaFile(target.file_path);
     await TravelPackage.deleteMediaByIds([target.id]);
+    await deleteStoredFile(target.file_path);
 
     res.status(200).json({ message: "Media deleted successfully" });
   } catch (err) {

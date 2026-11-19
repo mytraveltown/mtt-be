@@ -1,11 +1,10 @@
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
 const User = require("../models/user.model");
 const Agent = require("../models/agent.model");
 const jwt = require("jsonwebtoken");
 const otpService = require("../services/otp.service");
+const { attachUploadFields, deleteStoredFile } = require("../services/media.service");
 const sanitizeUser = (user) => {
   if (!user) return null;
   const { password, ...safeUser } = user;
@@ -154,21 +153,17 @@ exports.updateProfile = async (req, res) => {
       gender: gender === "" || gender == null ? null : gender,
     };
 
-    if (req.file) {
-      if (existingUser.profile?.startsWith("/uploads/users/")) {
-        const oldPath = path.join(
-          __dirname,
-          "../..",
-          existingUser.profile.replace(/^\//, "")
-        );
-        if (fs.existsSync(oldPath)) {
-          fs.unlinkSync(oldPath);
-        }
-      }
-      updates.profile = `/uploads/users/${req.file.filename}`;
-    }
+    const { profile: newProfile } = await attachUploadFields(req.body, ["profile"], {
+      scope: "profile",
+      userId,
+    });
+    if (newProfile) updates.profile = newProfile;
 
     await User.update(userId, updates);
+
+    if (newProfile && existingUser.profile && existingUser.profile !== newProfile) {
+      await deleteStoredFile(existingUser.profile);
+    }
 
     if(existingUser.role == 'agent' && existingUser.name != name){
       await Agent.updateByUserId(existingUser.id, { verification_status : 'pending' });
@@ -179,6 +174,7 @@ exports.updateProfile = async (req, res) => {
 
     res.status(200).json(sanitizeUser(user));
   } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ message: err.message });
     console.error(err);
     res.status(500).json({ message: "Server error", err: err.message });
   }

@@ -1,18 +1,9 @@
-const fs = require("fs");
-const path = require("path");
 const Bank = require("../models/bank.model");
 const { BANK_DOCUMENT_TYPES } = require("../utils/documentTypes");
 const { normalizeIfsc, isValidIfsc } = require("../utils/ifsc");
+const { attachUploadFields, deleteStoredFile } = require("../services/media.service");
 
 const MAX_BANK_ADDRESS_LENGTH = 500;
-
-const toPublicPath = (file) => (file ? `/uploads/bank/${file.filename}` : null);
-
-const deleteBankDocument = (documentPath) => {
-  if (!documentPath?.startsWith("/uploads/bank/")) return;
-  const fullPath = path.join(__dirname, "../..", documentPath.replace(/^\//, ""));
-  if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
-};
 
 exports.myBankDetails = async (req, res) => {
   try {
@@ -74,12 +65,9 @@ exports.updateBankDetails = async (req, res) => {
     const ifsc = normalizeIfsc(req.body.ifsc);
     const bankAddress = req.body.bank_address?.trim() || null;
     const documentType = req.body.bank_document_type?.trim() || null;
-    const uploadedPath = toPublicPath(req.file);
 
-    const rejectRequest = (message) => {
-      deleteBankDocument(uploadedPath);
-      return res.status(400).json({ success: false, message });
-    };
+    // A rejected request leaves the upload unattached; S3 expires it.
+    const rejectRequest = (message) => res.status(400).json({ success: false, message });
 
     if (bankAddress && bankAddress.length > MAX_BANK_ADDRESS_LENGTH) {
       return rejectRequest(
@@ -97,6 +85,12 @@ exports.updateBankDetails = async (req, res) => {
         `bank_document_type must be one of: ${BANK_DOCUMENT_TYPES.join(", ")}`
       );
     }
+    const { bank_document: uploadedPath = null } = await attachUploadFields(
+      req.body,
+      ["bank_document"],
+      { scope: "bank-document", userId: req.user.id }
+    );
+
     if (uploadedPath && !documentType) {
       return rejectRequest("Please select the bank document type.");
     }
@@ -116,8 +110,8 @@ exports.updateBankDetails = async (req, res) => {
       bank_document: uploadedPath,
     });
 
-    if (uploadedPath && existing?.bank_document) {
-      deleteBankDocument(existing.bank_document);
+    if (uploadedPath && existing?.bank_document && existing.bank_document !== uploadedPath) {
+      await deleteStoredFile(existing.bank_document);
     }
 
     return res.json({
@@ -126,6 +120,9 @@ exports.updateBankDetails = async (req, res) => {
       data: bank,
     });
   } catch (err) {
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ success: false, message: err.message });
+    }
     console.error(err);
     return res.status(500).json({
       success: false,

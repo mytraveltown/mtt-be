@@ -36,3 +36,6 @@ package-lock.json
 
 # Environment variables
 # .env
+
+# Migration backups (contain identity documents)
+backups/

@@ -1,5 +1,3 @@
-const fs = require("fs");
-const path = require("path");
 const Agent = require("../models/agent.model");
 const User = require("../models/user.model");
 const DigilockerSession = require("../models/digilocker.model");
@@ -10,6 +8,24 @@ const { remindAgentsWithoutPackages } = require("../services/agentReminder.servi
 const { CUSTOM_DOCUMENT_TYPE_MAX_LENGTH } = require("../utils/documentTypes");
 const { TEXT_INPUT_MAX_WORDS, countWords } = require("../utils/wordLimit");
 const { prepareTextForSave } = require("../services/textRefiner.service");
+const { attachUploadFields, deleteStoredFiles } = require("../services/media.service");
+
+// Form fields that carry an S3 "/media/.." path for an agent document.
+const AGENT_DOCUMENT_FIELDS = ["aadhar", "aadhar_back", "dl", "dl_back", "company_document"];
+
+// Upload field -> agent column it is stored in.
+const VERIFICATION_DOCUMENT_COLUMNS = {
+  aadhar: "aadhar_document",
+  aadhar_back: "aadhar_document_back",
+  dl: "dl_document",
+  dl_back: "dl_document_back",
+};
+
+const attachAgentDocuments = (req) =>
+  attachUploadFields(req.body, AGENT_DOCUMENT_FIELDS, {
+    scope: "agent-document",
+    userId: req.user.id,
+  });
 
 // Raw input may be longer than the saved limit: prepareAboutForSave condenses it with AI.
 const ABOUT_TOO_LONG_MESSAGE = `about must be ${TEXT_INPUT_MAX_WORDS} words or fewer`;
@@ -37,14 +53,6 @@ const parseDealsIn = (value) => {
   return [];
 };
 
-const deleteDocument = (documentPath) => {
-  if (!documentPath?.startsWith("/uploads/agents/")) return;
-  const fullPath = path.join(__dirname, "../..", documentPath.replace(/^\//, ""));
-  if (fs.existsSync(fullPath)) {
-    fs.unlinkSync(fullPath);
-  }
-};
-
 // SMS is best-effort: a provider failure must never undo or fail the
 // verification itself, so it is logged instead of thrown.
 const notifyAgentVerified = async (agent) => {
@@ -61,7 +69,11 @@ const notifyAgentVerified = async (agent) => {
   }
 };
 
-const applyVerificationUpdates = async (req, updates, existing = null) => {
+/**
+ * `uploads` holds the attached document paths by form field. Replaced files are
+ * pushed to `staleFiles` and removed only after the new record is saved.
+ */
+const applyVerificationUpdates = async (req, updates, { uploads, staleFiles, existing = null }) => {
   const { verification_method } = req.body;
 
   if (verification_method) {
@@ -82,42 +94,10 @@ const applyVerificationUpdates = async (req, updates, existing = null) => {
     }
   }
 
-  if (req.files?.aadhar?.[0]) {
-    if (existing?.aadhar_document) {
-      deleteDocument(existing.aadhar_document);
-    }
-
-    updates.aadhar_document = `/uploads/agents/${req.files.aadhar[0].filename}`;
-    updates.verification_method = "upload";
-    updates.verification_status = "pending";
-  }
-
-  if (req.files?.aadhar_back?.[0]) {
-    if (existing?.aadhar_document_back) {
-      deleteDocument(existing.aadhar_document_back);
-    }
-
-    updates.aadhar_document_back = `/uploads/agents/${req.files.aadhar_back[0].filename}`;
-    updates.verification_method = "upload";
-    updates.verification_status = "pending";
-  }
-
-  if (req.files?.dl?.[0]) {
-    if (existing?.dl_document) {
-      deleteDocument(existing.dl_document);
-    }
-
-    updates.dl_document = `/uploads/agents/${req.files.dl[0].filename}`;
-    updates.verification_method = "upload";
-    updates.verification_status = "pending";
-  }
-
-  if (req.files?.dl_back?.[0]) {
-    if (existing?.dl_document_back) {
-      deleteDocument(existing.dl_document_back);
-    }
-
-    updates.dl_document_back = `/uploads/agents/${req.files.dl_back[0].filename}`;
+  for (const [field, column] of Object.entries(VERIFICATION_DOCUMENT_COLUMNS)) {
+    if (!uploads[field]) continue;
+    if (existing?.[column]) staleFiles.push(existing[column]);
+    updates[column] = uploads[field];
     updates.verification_method = "upload";
     updates.verification_status = "pending";
   }
@@ -243,17 +223,15 @@ const badRequest = (message) => Object.assign(new Error(message), { statusCode: 
  * Applies the company document (type + uploaded file) to `updates`.
  * A type and a file always go together: a new file needs a type, and choosing a
  * type needs a file unless one is already on record. Removing the company clears both.
+ * A file sent without a company is ignored; S3 expires it as a never-attached upload.
  */
-const applyCompanyDocument = (req, updates, hasCompany, existing = null) => {
-  const uploaded = req.files?.company_document?.[0];
-  const uploadedPath = uploaded ? `/uploads/agents/${uploaded.filename}` : null;
-  const discardUpload = () => uploadedPath && deleteDocument(uploadedPath);
+const applyCompanyDocument = (req, updates, hasCompany, { uploads, staleFiles, existing = null }) => {
+  const uploadedPath = hasCompany ? uploads.company_document || null : null;
 
   if (!hasCompany) {
-    discardUpload();
     // Only touch the columns when there is something to clear.
     if (existing?.company_document || existing?.company_document_type) {
-      deleteDocument(existing.company_document);
+      if (existing.company_document) staleFiles.push(existing.company_document);
       updates.company_document_type = null;
       updates.company_document = null;
     }
@@ -263,13 +241,11 @@ const applyCompanyDocument = (req, updates, hasCompany, existing = null) => {
   const type = req.body.company_document_type?.trim() || null;
   // Listed types or a custom name typed under "Others".
   if (type && type.length > CUSTOM_DOCUMENT_TYPE_MAX_LENGTH) {
-    discardUpload();
     throw badRequest(
       `Company document type must be at most ${CUSTOM_DOCUMENT_TYPE_MAX_LENGTH} characters`
     );
   }
   if (uploadedPath && !type) {
-    discardUpload();
     throw badRequest("Please select the company document type");
   }
   if (type && !uploadedPath && !existing?.company_document) {
@@ -278,7 +254,7 @@ const applyCompanyDocument = (req, updates, hasCompany, existing = null) => {
 
   if (type) updates.company_document_type = type;
   if (uploadedPath) {
-    if (existing?.company_document) deleteDocument(existing.company_document);
+    if (existing?.company_document) staleFiles.push(existing.company_document);
     updates.company_document = uploadedPath;
   }
 };
@@ -323,8 +299,10 @@ exports.create = async (req, res) => {
       deals_in,
     };
 
-    applyCompanyDocument(req, payload, has_company);
-    await applyVerificationUpdates(req, payload);
+    const uploads = await attachAgentDocuments(req);
+    const documentContext = { uploads, staleFiles: [] };
+    applyCompanyDocument(req, payload, has_company, documentContext);
+    await applyVerificationUpdates(req, payload, documentContext);
 
     const insertId = await Agent.create(payload);
     await User.update(userId, { role: "agent" });
@@ -368,16 +346,19 @@ exports.updateMine = async (req, res) => {
       }
     }
     if (company_name !== undefined) updates.company_name = company_name;
-    applyCompanyDocument(req, updates, hasCompany, existing);
+    const uploads = await attachAgentDocuments(req);
+    const documentContext = { uploads, staleFiles: [], existing };
+    applyCompanyDocument(req, updates, hasCompany, documentContext);
     if (about !== undefined) updates.about = await prepareAboutForSave(about, existing.about);
     if (location !== undefined) updates.location = location;
     if (experience !== undefined) updates.experience = Number(experience);
     if (req.body.deals_in !== undefined)
       updates.deals_in = parseDealsIn(req.body.deals_in);
 
-    await applyVerificationUpdates(req, updates, existing);
+    await applyVerificationUpdates(req, updates, documentContext);
 
     await Agent.update(existing.id, updates);
+    await deleteStoredFiles(documentContext.staleFiles);
 
     const agent = await Agent.findByUserId(userId);
     res.status(200).json(agent);

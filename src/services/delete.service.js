@@ -1,39 +1,31 @@
-const fs = require("fs");
-const path = require("path");
 const db = require("../config/db");
 const Agent = require("../models/agent.model");
 const User = require("../models/user.model");
 const TravelPackage = require("../models/package.model");
 const Review = require("../models/review.model");
+const { deleteStoredFile, deleteStoredFiles } = require("./media.service");
 
-const deleteFile = (filePath, prefix) => {
-  if (!filePath?.startsWith(prefix)) return;
-  const fullPath = path.join(__dirname, "../..", filePath.replace(/^\//, ""));
-  if (fs.existsSync(fullPath)) {
-    fs.unlinkSync(fullPath);
-  }
-};
-
-const deleteAgentDocuments = (agent) => {
-  deleteFile(agent.aadhar_document, "/uploads/agents/");
-  deleteFile(agent.aadhar_document_back, "/uploads/agents/");
-  deleteFile(agent.dl_document, "/uploads/agents/");
-  deleteFile(agent.dl_document_back, "/uploads/agents/");
-};
+// Each helper handles S3 ("/media/...") and legacy local ("/uploads/...") paths.
+const deleteAgentDocuments = (agent) =>
+  deleteStoredFiles([
+    agent.aadhar_document,
+    agent.aadhar_document_back,
+    agent.dl_document,
+    agent.dl_document_back,
+    agent.company_document,
+  ]);
 
 const deletePackageMediaFiles = async (packageId) => {
   const media = await TravelPackage.getMedia(packageId);
-  media.forEach((item) => deleteFile(item.file_path, "/uploads/packages/"));
+  await deleteStoredFiles(media.map((item) => item.file_path));
 };
 
-const deleteReviewMediaFiles = (filePaths) => {
-  filePaths.forEach((filePath) => deleteFile(filePath, "/uploads/reviews/"));
-};
+const deleteReviewMediaFiles = (filePaths) => deleteStoredFiles(filePaths);
 
 const deletePackageFull = async (packageId) => {
   await deletePackageMediaFiles(packageId);
   // Review rows cascade with the package; their uploaded files do not.
-  deleteReviewMediaFiles(await Review.getMediaPathsByPackageId(packageId));
+  await deleteReviewMediaFiles(await Review.getMediaPathsByPackageId(packageId));
   await db.query("DELETE FROM travel_package_media WHERE package_id = ?", [packageId]);
   await db.query("DELETE FROM travel_package_day WHERE package_id = ?", [packageId]);
   await db.query("DELETE FROM bookings WHERE package_id = ?", [packageId]);
@@ -48,7 +40,7 @@ const deleteAllAgentPackages = async (agentId) => {
 };
 
 const revokeAgent = async (agent) => {
-  deleteAgentDocuments(agent);
+  await deleteAgentDocuments(agent);
   await deleteAllAgentPackages(agent.id);
   await Agent.delete(agent.id);
 
@@ -69,18 +61,17 @@ const deleteUserFull = async (userId) => {
     await revokeAgent(agent);
   }
 
-  deleteReviewMediaFiles(await Review.getMediaPathsByUserId(userId));
+  await deleteReviewMediaFiles(await Review.getMediaPathsByUserId(userId));
   await db.query("DELETE FROM bookings WHERE user_id = ?", [userId]);
   await db.query("DELETE FROM digilocker_sessions WHERE user_id = ?", [userId]);
   await db.query("DELETE FROM login_otps WHERE user_id = ?", [userId]);
-  deleteFile(user.profile, "/uploads/users/");
+  await deleteStoredFile(user.profile);
   await User.delete(userId);
 
   return { success: true };
 };
 
 module.exports = {
-  deleteFile,
   deletePackageFull,
   deleteAllAgentPackages,
   revokeAgent,

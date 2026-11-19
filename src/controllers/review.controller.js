@@ -4,10 +4,10 @@ const TravelPackage = require("../models/package.model");
 const Booking = require("../models/booking.model");
 const Agent = require("../models/agent.model");
 const User = require("../models/user.model");
-const { deleteFile } = require("../services/delete.service");
+const { attachUploads, deleteStoredFiles } = require("../services/media.service");
+const { parseUploadList } = require("../utils/mediaPath");
 const { parsePagination, buildPaginationMeta } = require("../utils/pagination");
 
-const REVIEW_MEDIA_PREFIX = "/uploads/reviews/";
 const MIN_COMMENT_LENGTH = 10;
 const MAX_COMMENT_LENGTH = 2000;
 const MIN_REPLY_LENGTH = 2;
@@ -16,10 +16,6 @@ const MAX_REPLY_LENGTH = 1000;
 const parseId = (value) => {
   const id = Number(value);
   return Number.isInteger(id) && id > 0 ? id : null;
-};
-
-const removeUploadedFiles = (files = []) => {
-  files.forEach((file) => deleteFile(`${REVIEW_MEDIA_PREFIX}${file.filename}`, REVIEW_MEDIA_PREFIX));
 };
 
 const isAdminUser = async (reqUser) => {
@@ -114,39 +110,42 @@ exports.getById = async (req, res) => {
   }
 };
 
-// POST /api/reviews/package/:packageId  (multipart: rating, comment, media[]; requires a paid booking)
+// POST /api/reviews/package/:packageId
+// Body: rating, comment, media (JSON array of "/media/..." paths from /api/uploads/presign).
+// Requires a paid booking. Media sent with a rejected review stays unattached and S3 expires it.
 exports.create = async (req, res) => {
-  const files = req.files || [];
   try {
     const packageId = parseId(req.params.packageId);
     if (!packageId) {
-      removeUploadedFiles(files);
       return res.status(400).json({ message: "Invalid package id" });
     }
 
     const input = validateReviewInput(req.body);
     if (input.error) {
-      removeUploadedFiles(files);
       return res.status(400).json({ message: input.error });
+    }
+
+    const mediaPaths = parseUploadList(req.body.media);
+    if (!mediaPaths) {
+      return res.status(400).json({ message: "media must be a list of uploaded file paths" });
     }
 
     const userId = req.user.id;
 
     const pkg = await TravelPackage.findById(packageId);
     if (!pkg || pkg.status !== "published") {
-      removeUploadedFiles(files);
       return res.status(404).json({ message: "Package not found" });
     }
 
     if (!(await Booking.hasPaidBookingForPackage(userId, packageId))) {
-      removeUploadedFiles(files);
       return res.status(403).json({ message: "Only travellers who booked this package can review it" });
     }
 
     if (await Review.findByUserAndPackage(userId, packageId)) {
-      removeUploadedFiles(files);
       return res.status(409).json({ message: "You have already reviewed this package" });
     }
+
+    const media = await attachUploads(mediaPaths, { scope: "review-media", userId });
 
     const reviewId = await Review.create({
       packageId,
@@ -154,16 +153,18 @@ exports.create = async (req, res) => {
       guestName: null,
       rating: input.rating,
       comment: input.comment,
-      media: files.map((file) => ({
-        media_type: file.mimetype.startsWith("video/") ? "video" : "image",
-        file_path: `${REVIEW_MEDIA_PREFIX}${file.filename}`,
+      media: media.map((item) => ({
+        media_type: item.kind === "video" ? "video" : "image",
+        file_path: item.path,
       })),
     });
 
     const review = await Review.findFullById(reviewId);
     res.status(201).json({ message: "Review submitted", review });
   } catch (err) {
-    removeUploadedFiles(files);
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message });
+    }
     if (err.code === "ER_DUP_ENTRY") {
       return res.status(409).json({ message: "You have already reviewed this package" });
     }
@@ -191,7 +192,7 @@ exports.remove = async (req, res) => {
 
     const media = await Review.getMediaByReviewId(reviewId);
     await Review.delete(reviewId);
-    media.forEach((item) => deleteFile(item.file_path, REVIEW_MEDIA_PREFIX));
+    await deleteStoredFiles(media.map((item) => item.file_path));
 
     res.status(200).json({ message: "Review deleted", id: reviewId });
   } catch (err) {

@@ -23,6 +23,9 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Swaps stored S3 URLs in every JSON response for presigned (viewable) ones.
+app.use(require("./middlewares/presignMedia.middleware"));
+
 app.use("/api/auth", require("./routes/auth.route"));
 app.use("/api/users", require("./routes/user.route"));
 app.use("/api/agents", require("./routes/agent.route"));
@@ -37,7 +40,13 @@ app.use("/api/digilocker", require("./routes/digilocker.route"));
 app.use("/api/sitemap", require("./routes/sitemap.route"));
 app.use("/api/seo", require("./routes/seo.route"));
 app.use("/api/ai", require("./routes/ai.route"));
+app.use("/api/uploads", require("./routes/upload.route"));
 
+// S3 media: "/media/<key>" redirects to a short-lived presigned URL (private bucket).
+app.use("/media", require("./routes/media.route"));
+
+// Legacy uploads: served from S3 when migrated there, otherwise from local disk below.
+app.use("/uploads", require("./routes/media.route").legacyUploadsRouter);
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
 // Local dev only: uploads missing on this machine (e.g. made on the live server) are
