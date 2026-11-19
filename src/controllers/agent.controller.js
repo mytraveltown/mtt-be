@@ -9,7 +9,7 @@ const { revokeAgent } = require("../services/delete.service");
 const { remindAgentsWithoutPackages } = require("../services/agentReminder.service");
 const { CUSTOM_DOCUMENT_TYPE_MAX_LENGTH } = require("../utils/documentTypes");
 const { TEXT_INPUT_MAX_WORDS, countWords } = require("../utils/wordLimit");
-const { refineTextForSave, needsCleanup } = require("../services/textRefiner.service");
+const { prepareTextForSave } = require("../services/textRefiner.service");
 
 // Raw input may be longer than the saved limit: prepareAboutForSave condenses it with AI.
 const ABOUT_TOO_LONG_MESSAGE = `about must be ${TEXT_INPUT_MAX_WORDS} words or fewer`;
@@ -18,14 +18,8 @@ const ABOUT_TOO_LONG_MESSAGE = `about must be ${TEXT_INPUT_MAX_WORDS} words or f
  * Polishes the agent's "about" text with AI before it is saved. Skips the AI call when the text
  * is unchanged and already clean, so saving other fields does not keep re-wording the bio.
  */
-const prepareAboutForSave = async (about, previousAbout = null) => {
-  const trimmed = String(about).trim();
-  if (!trimmed) return trimmed;
-  const isUnchanged = previousAbout !== null && trimmed === String(previousAbout).trim();
-  if (isUnchanged && !needsCleanup(trimmed, "about_me")) return previousAbout;
-  const { text } = await refineTextForSave(trimmed, "about_me");
-  return text;
-};
+const prepareAboutForSave = (about, previousAbout = null) =>
+  prepareTextForSave(about, "about_me", previousAbout);
 
 const parseDealsIn = (value) => {
   if (Array.isArray(value)) return value;

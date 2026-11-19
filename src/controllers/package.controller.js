@@ -5,6 +5,19 @@ const TravelPackage = require("../models/package.model");
 const { deletePackageFull } = require("../services/delete.service");
 const { isPaginationRequested, parsePagination } = require("../utils/pagination");
 const { LOCATION_DESCRIPTION_MAX_WORDS, countWords } = require("../utils/wordLimit");
+const { INTERNATIONAL_MIN_PRICE } = require("../utils/pricing");
+const { prepareTextForSave } = require("../services/textRefiner.service");
+
+/**
+ * On publish, the location description is polished with AI just like the "Improve with AI" button,
+ * so travellers always see clean copy. Drafts are saved as typed. `previous` is the stored text when
+ * the package was already published (and so already polished); it lets an unchanged text skip the AI.
+ */
+const polishDescriptionOnPublish = async (payload, previous = null) => {
+  if (payload.status !== "published" || !payload.location_description) return payload;
+  const polished = await prepareTextForSave(payload.location_description, "location_description", previous);
+  return { ...payload, location_description: polished || null };
+};
 
 const parseBoolean = (value, fallback = false) => {
   if (value === undefined || value === null || value === "") return fallback;
@@ -85,6 +98,22 @@ const buildPackagePayload = (body, statusOverride = null) => {
   }
 
   const packageType = package_type === "international" ? "international" : "domestic";
+  const status = statusOverride || (body.status === "published" ? "published" : "draft");
+  const price = body.price != null && body.price !== "" ? Number(body.price) : null;
+
+  if (price !== null && (!Number.isFinite(price) || price < 0)) {
+    return { error: "price must be a number of 0 or more" };
+  }
+
+  // Drafts may be saved without a price, but an international price is never allowed below the minimum.
+  if (
+    packageType === "international" &&
+    ((price !== null && price < INTERNATIONAL_MIN_PRICE) || (price === null && status === "published"))
+  ) {
+    return {
+      error: `International packages must be priced at least ₹${INTERNATIONAL_MIN_PRICE.toLocaleString("en-IN")}`,
+    };
+  }
 
   return {
     payload: {
@@ -108,11 +137,8 @@ const buildPackagePayload = (body, statusOverride = null) => {
       cab_from_hotel_to: ["railway", "airport", "both"].includes(cab_from_hotel_to)
         ? cab_from_hotel_to
         : "both",
-      price:
-        body.price != null && body.price !== ""
-          ? Number(body.price)
-          : null,
-      status: statusOverride || (body.status === "published" ? "published" : "draft"),
+      price,
+      status,
     },
   };
 };
@@ -350,8 +376,10 @@ exports.create = async (req, res) => {
       return res.status(400).json({ message: "At least one itinerary day is required" });
     }
 
+    const payload = await polishDescriptionOnPublish(built.payload);
+
     const packageId = await TravelPackage.create({
-      ...built.payload,
+      ...payload,
       slug: await TravelPackage.generateUniqueSlug(built.payload.package_name),
       agent_id: agent.id,
     });
@@ -388,13 +416,17 @@ exports.update = async (req, res) => {
     if (built.error) return res.status(400).json({ message: built.error });
 
     const { pkg: existing } = ownership;
-    const nameChanged = existing.package_name !== built.payload.package_name;
+    const payload = await polishDescriptionOnPublish(
+      built.payload,
+      existing.status === "published" ? existing.location_description : null
+    );
+    const nameChanged = existing.package_name !== payload.package_name;
     const slug =
       nameChanged || !existing.slug
-        ? await TravelPackage.generateUniqueSlug(built.payload.package_name, existing.id)
+        ? await TravelPackage.generateUniqueSlug(payload.package_name, existing.id)
         : existing.slug;
 
-    await TravelPackage.update(req.params.id, { ...built.payload, slug });
+    await TravelPackage.update(req.params.id, { ...payload, slug });
 
     if (req.body.itinerary !== undefined) {
       const itinerary = parseItinerary(req.body.itinerary);
@@ -463,3 +495,6 @@ exports.deleteMedia = async (req, res) => {
     res.status(500).json({ message: "Server error", err: err.message });
   }
 };
+
+// Exported for unit tests.
+exports.buildPackagePayload = buildPackagePayload;

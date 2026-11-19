@@ -49,7 +49,11 @@ const calculateBookingPricing = ({
   };
 };
 
+/** International packages cannot be listed below this price (INR); there is no maximum. */
+const INTERNATIONAL_MIN_PRICE = 20000;
+
 module.exports = {
+  INTERNATIONAL_MIN_PRICE,
   ADVANCE_PERCENT,
   PAYMENT_PLANS,
   calculateBookingPricing,
