@@ -13,6 +13,9 @@ concurrency:
   group: backend-production
   cancel-in-progress: false
 
+env:
+  APP_DIR: /var/www/backend
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -42,24 +45,35 @@ jobs:
           printf '%s\n' "$SSH_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Upload backend to staging
+      # Server-only files are excluded so --delete never removes them.
+      - name: Sync code to /var/www/backend
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
-          rsync -az --delete \
+          ssh "$VPS_USER@$VPS_HOST" "test -f '$APP_DIR/.env'" \
+            || { echo "::error::$APP_DIR/.env is missing on the server"; exit 1; }
+
+          rsync -az --delete --itemize-changes \
             --exclude='.git/' \
             --exclude='.github/' \
             --exclude='.env' \
             --exclude='node_modules/' \
             --exclude='uploads/' \
             --exclude='logs/' \
-            ./ "$VPS_USER@$VPS_HOST:/home/deploy/backend-release/"
+            --exclude='backups/' \
+            ./ "$VPS_USER@$VPS_HOST:$APP_DIR/"
 
-      - name: Deploy and reload PM2
+      # Login shell so node, npm and pm2 are on PATH (including nvm installs).
+      - name: Install dependencies and reload PM2
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
-          ssh "$VPS_USER@$VPS_HOST" \
-            'sudo /usr/local/sbin/deploy-mtt-backend'
+          ssh "$VPS_USER@$VPS_HOST" bash -lc "'
+            set -e
+            cd $APP_DIR
+            npm ci --omit=dev --no-audit --no-fund
+            pm2 reload all --update-env
+            pm2 save
+          '"
